@@ -105,10 +105,10 @@ pub struct KonfigOptions {
 /// example:
 /// ```
 /// use serde::{Deserialize, Serialize};
-/// use konfig-rust::*;
-/// use konfig-rust::format::*;
+/// use konfig_rust::*;
+/// use konfig_rust::format::*;
 ///
-/// use konfig_derive::KonfigSection;
+/// use konfig_rust_derive::KonfigSection;
 ///
 /// #[derive(Serialize, Deserialize, KonfigSection)] // Aside from KonfigSection, you also have to use the Serialize and Deserialize macros
 /// struct Config {
@@ -294,7 +294,7 @@ impl KonfigManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use konfig_derive::KonfigSection;
+    use konfig_rust_derive::KonfigSection;
     use serde::{Deserialize, Serialize};
 
     #[test]
