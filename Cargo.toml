@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "./konfig-rust",
+    "./konfig-rust-derive"
+]
+resolver = "3"
