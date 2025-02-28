@@ -40,7 +40,7 @@ pub enum KonfigError {
 ///
 /// If you want to use custom validate or on_load callbacks, you have to implement this trait manually,
 /// there are plans to allow for adding custom callbacks using the derive macro or with a functional interface
-pub trait KonfigSection {
+pub trait KonfigSection: KonfigSerialization {
     fn name(&self) -> Cow<'_, str>;
     fn validate(&self) -> Result<(), KonfigError> {
         Ok(())
@@ -48,12 +48,56 @@ pub trait KonfigSection {
     fn on_load(&self) -> Result<(), KonfigError> {
         Ok(())
     }
+    // fn to_bytes(&self, format: &FormatHandlerEnum) -> Result<Vec<u8>, KonfigError>;
+    // fn update_from_bytes(
+    //     &mut self,
+    //     bytes: &[u8],
+    //     format: &FormatHandlerEnum,
+    // ) -> Result<(), KonfigError>;
+}
+
+/// Automatically implements internal methods originally defined in `KonfigSection`
+///
+/// only used internally by konfig
+pub trait KonfigSerialization {
     fn to_bytes(&self, format: &FormatHandlerEnum) -> Result<Vec<u8>, KonfigError>;
     fn update_from_bytes(
         &mut self,
         bytes: &[u8],
         format: &FormatHandlerEnum,
     ) -> Result<(), KonfigError>;
+}
+
+// blanket impl to simplify `KonfigSection`
+impl<T: ?Sized> KonfigSerialization for T
+where
+    T: serde::Serialize + serde::de::DeserializeOwned
+{
+    fn to_bytes(&self, format: &FormatHandlerEnum) -> Result<Vec<u8>, KonfigError> {
+        format.marshal(self)
+    }
+
+    fn update_from_bytes(&mut self, bytes: &[u8], format: &FormatHandlerEnum) -> Result<(), KonfigError> {
+        let new_instance: T = match format {
+            FormatHandlerEnum::JSON(_) => {
+                serde_json::from_slice(bytes)
+                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
+            },
+            FormatHandlerEnum::YAML(_) => {
+                serde_yaml::from_slice(bytes)
+                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
+            },
+            FormatHandlerEnum::TOML(_) => {
+                let s = str::from_utf8(bytes)
+                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?;
+                toml::from_str(s)
+                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
+            },
+        };
+
+        *self = new_instance;
+        Ok(())
+    }
 }
 
 // had to go into unsafe land to deliver dx 🤷

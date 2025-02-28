@@ -1,6 +1,6 @@
 [package]
 name = "konfig-rust-derive"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A derive macro for the konfig-rust library, allowing shorthand implementation of the KonfigSection trait"
 license = "MIT"
