@@ -48,12 +48,6 @@ pub trait KonfigSection: KonfigSerialization {
     fn on_load(&self) -> Result<(), KonfigError> {
         Ok(())
     }
-    // fn to_bytes(&self, format: &FormatHandlerEnum) -> Result<Vec<u8>, KonfigError>;
-    // fn update_from_bytes(
-    //     &mut self,
-    //     bytes: &[u8],
-    //     format: &FormatHandlerEnum,
-    // ) -> Result<(), KonfigError>;
 }
 
 /// Automatically implements internal methods originally defined in `KonfigSection`
