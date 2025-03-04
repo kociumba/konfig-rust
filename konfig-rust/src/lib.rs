@@ -54,11 +54,11 @@ pub trait KonfigSection: KonfigSerialization {
 ///
 /// only used internally by konfig
 pub trait KonfigSerialization {
-    fn to_bytes(&self, format: &FormatHandlerEnum) -> Result<Vec<u8>, KonfigError>;
+    fn to_bytes(&self, format: &FormatHandler) -> Result<Vec<u8>, KonfigError>;
     fn update_from_bytes(
         &mut self,
         bytes: &[u8],
-        format: &FormatHandlerEnum,
+        format: &FormatHandler,
     ) -> Result<(), KonfigError>;
 }
 
@@ -67,28 +67,12 @@ impl<T: ?Sized> KonfigSerialization for T
 where
     T: serde::Serialize + serde::de::DeserializeOwned
 {
-    fn to_bytes(&self, format: &FormatHandlerEnum) -> Result<Vec<u8>, KonfigError> {
+    fn to_bytes(&self, format: &FormatHandler) -> Result<Vec<u8>, KonfigError> {
         format.marshal(self)
     }
 
-    fn update_from_bytes(&mut self, bytes: &[u8], format: &FormatHandlerEnum) -> Result<(), KonfigError> {
-        let new_instance: T = match format {
-            FormatHandlerEnum::JSON(_) => {
-                serde_json::from_slice(bytes)
-                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
-            },
-            FormatHandlerEnum::YAML(_) => {
-                serde_yaml::from_slice(bytes)
-                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
-            },
-            FormatHandlerEnum::TOML(_) => {
-                let s = str::from_utf8(bytes)
-                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?;
-                toml::from_str(s)
-                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
-            },
-        };
-
+    fn update_from_bytes(&mut self, bytes: &[u8], format: &FormatHandler) -> Result<(), KonfigError> {
+        let new_instance: T = format.unmarshal(bytes)?;
         *self = new_instance;
         Ok(())
     }
@@ -121,8 +105,8 @@ impl SectionPtr {
 
 /// Used for configuring `KonfigManager`
 pub struct KonfigOptions {
-    /// The format KonfigManager is supposed to use for the config file, possible options are in the `Format` enum
-    pub format: Format,
+    /// The format KonfigManager is supposed to use for the config file, pass any format from the `Format` enum or implement your own format handler
+    pub format: FormatHandler,
     // If `true`, KonfigManager will try to load the config file when it is created
     // auto_load: bool,
     /// If `true` will try to save data to the config file on panic and SIGINT and SIGTERM (currently noop due to rust lifetime issues)
@@ -157,7 +141,7 @@ pub struct KonfigOptions {
 /// let mut c = Config { name: "Bob".to_string(), age: 32 };
 ///
 /// let mut manager = KonfigManager::new(KonfigOptions {
-///     format: Format::JSON,
+///     format: Format::JSON.create_handler(),
 ///     auto_save: true,
 ///     use_callbacks: true,
 ///     config_path: "config.json".to_string(),
@@ -173,7 +157,6 @@ pub struct KonfigOptions {
 /// ```
 pub struct KonfigManager {
     opts: KonfigOptions,
-    format_handler: FormatHandlerEnum,
     path: Box<Path>,
     sections: HashMap<String, SectionPtr>,
 }
@@ -186,7 +169,6 @@ impl KonfigManager {
     /// Simply creates a new `KonfigManager`, with the passed in `KonfigOptions`
     pub fn new(opts: KonfigOptions) -> Self {
         let m = KonfigManager {
-            format_handler: opts.format.create_handler(),
             path: Box::from(Path::new(&opts.config_path)),
             opts,
             sections: HashMap::new(),
@@ -223,11 +205,7 @@ impl KonfigManager {
             return Ok(());
         }
 
-        let config: serde_json::Value = match &self.format_handler {
-            FormatHandlerEnum::JSON(handler) => handler.unmarshal(data.as_slice())?,
-            FormatHandlerEnum::YAML(handler) => handler.unmarshal(data.as_slice())?,
-            FormatHandlerEnum::TOML(handler) => handler.unmarshal(data.as_slice())?,
-        };
+        let config: serde_json::Value = self.opts.format.unmarshal(data.as_slice())?;
 
         let config_map = config
             .as_object()
@@ -235,10 +213,10 @@ impl KonfigManager {
 
         for (name, section_value) in config_map {
             if let Some(section_ptr) = self.sections.get_mut(name) {
-                let bytes = self.format_handler.marshal(section_value)?;
+                let bytes = self.opts.format.marshal(section_value)?;
                 unsafe {
                     let section = section_ptr.as_mut();
-                    section.update_from_bytes(&bytes, &self.format_handler)?;
+                    section.update_from_bytes(&bytes, &self.opts.format)?;
                     if self.opts.use_callbacks {
                         section.validate()?;
                         section.on_load()?;
@@ -265,24 +243,13 @@ impl KonfigManager {
 
         for (name, section_ptr) in &self.sections {
             let section = unsafe { section_ptr.as_ref() };
-            let bytes = section.to_bytes(&self.format_handler)?;
+            let bytes = section.to_bytes(&self.opts.format)?;
 
-            let value: serde_json::Value = match &self.format_handler {
-                FormatHandlerEnum::JSON(_) => serde_json::from_slice(&bytes)
-                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?,
-                FormatHandlerEnum::YAML(_) => serde_yaml::from_slice(&bytes)
-                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?,
-                FormatHandlerEnum::TOML(_) => {
-                    let s = str::from_utf8(&bytes)
-                        .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?;
-                    toml::from_str(s).map_err(|err| KonfigError::UnmarshalError(err.to_string()))?
-                }
-            };
-
+            let value: serde_json::Value = self.opts.format.unmarshal(&bytes)?;
             map.insert(name.clone(), value);
         }
 
-        let out = self.format_handler.marshal(&map)?;
+        let out = self.opts.format.marshal(&map)?;
 
         let mut f =
             File::create(&self.path).map_err(|err| KonfigError::SaveError(err.to_string()))?;
@@ -331,22 +298,30 @@ impl KonfigManager {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use super::*;
     use konfig_rust_derive::KonfigSection;
     use serde::{Deserialize, Serialize};
 
     #[test]
     fn test_konfig() {
-        #[derive(Serialize, Deserialize, KonfigSection)]
+        #[derive(Serialize, Deserialize, KonfigSection, Debug)]
         struct TestData {
             a: i32,
             b: String,
         }
 
-        #[derive(Serialize, Deserialize, KonfigSection)]
+        #[derive(Serialize, Deserialize, KonfigSection, Debug)]
         struct TestData2 {
             port: String,
             host: String,
+        }
+
+        #[derive(Serialize, Deserialize, KonfigSection, Debug)]
+        struct ComplexTest {
+            a: Vec<Vec<(i32, i32)>>,
+            b: Option<String>,
+            c: (String, Result<Option<HashSet<Vec<(String, Option<i32>)>>>, String>), // goofy ahh type, also breaks yaml xd
         }
 
         let mut t = TestData {
@@ -359,8 +334,17 @@ mod tests {
             host: "localhost".to_string(),
         };
 
+        let mut set: HashSet<Vec<(String, Option<i32>)>> = HashSet::new();
+        set.insert(vec![("test".to_string(), Some(1)), ("test2".to_string(), Some(1000000))]);
+
+        let mut c = ComplexTest {
+            a: vec![vec![(1, 2), (4, 6)],vec![(3, 5), (7, 9)]],
+            b: Some("optional string value".to_string()),
+            c: ("test".to_string(), Ok(Some(set))),
+        };
+
         let mut mngr = KonfigManager::new(KonfigOptions {
-            format: Format::JSON,
+            format: Format::JSON.create_handler(),
             auto_save: false,
             use_callbacks: true,
             config_path: "test.json".to_string(),
@@ -371,6 +355,10 @@ mod tests {
             .unwrap();
 
         mngr.register_section(&mut t2)
+            .map_err(|err| println!("{}", err.to_string()))
+            .unwrap();
+
+        mngr.register_section(&mut c)
             .map_err(|err| println!("{}", err.to_string()))
             .unwrap();
 
@@ -387,7 +375,8 @@ mod tests {
         for (name, result) in mngr.validate_all() {
             println!("{}: {}", name, result.is_ok());
         }
-        println!("TestData: {}, {}", t.a, t.b);
-        println!("TestData2: {}, {}", t2.port, t2.host);
+        println!("TestData: {:#?}", t);
+        println!("TestData2: {:#?}", t2);
+        println!("ComplexTest: {:#?}", c);
     }
 }

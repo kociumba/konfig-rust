@@ -1,3 +1,4 @@
+use std::any::Any;
 use crate::KonfigError;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -10,82 +11,74 @@ pub enum Format {
 }
 
 impl Format {
-    pub fn create_handler(&self) -> FormatHandlerEnum {
+    pub fn create_handler(&self) -> FormatHandler {
         match self {
-            Format::JSON => FormatHandlerEnum::JSON(JSONFormat {}),
-            Format::YAML => FormatHandlerEnum::YAML(YAMLFormat {}),
-            Format::TOML => FormatHandlerEnum::TOML(TOMLFormat {}),
+            Format::JSON => FormatHandler::Builtin(BuiltinFormat::JSON),
+            Format::YAML => FormatHandler::Builtin(BuiltinFormat::YAML),
+            Format::TOML => FormatHandler::Builtin(BuiltinFormat::TOML),
         }
     }
 }
 
-// Needed couse rust is a crybaby and won't let me use generic traits
-pub enum FormatHandlerEnum {
-    JSON(JSONFormat),
-    YAML(YAMLFormat),
-    TOML(TOMLFormat),
+/// A generic trait for format handlers, implement to create a custom format
+pub trait ConfigFormat {
+    /// Uses the serde `Serialize` trait to serialize data to bytes in the specified format
+    fn marshal<T: Serialize>(&self, data: &T) -> Result<Vec<u8>, KonfigError>;
+
+    /// Uses the serde `DeserializeOwned` trait to deserialize data from bytes in the specified format
+    fn unmarshal<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, KonfigError>;
 }
 
-impl FormatHandlerEnum {
+// I love how this just duplicates the Format enum xd
+pub enum BuiltinFormat {
+    JSON,
+    YAML,
+    TOML,
+}
+
+/// Where all formats go to marshal
+pub enum FormatHandler {
+    Builtin(BuiltinFormat),
+    Custom(Box<dyn ConfigFormat>),
+}
+
+impl FormatHandler {
     pub fn marshal<T: Serialize>(&self, data: &T) -> Result<Vec<u8>, KonfigError> {
         match self {
-            FormatHandlerEnum::JSON(handler) => handler.marshal(data),
-            FormatHandlerEnum::YAML(handler) => handler.marshal(data),
-            FormatHandlerEnum::TOML(handler) => handler.marshal(data),
+            FormatHandler::Builtin(BuiltinFormat::JSON) => {
+                serde_json::to_vec(data).map_err(|err| KonfigError::MarshalError(err.to_string()))
+            }
+
+            FormatHandler::Builtin(BuiltinFormat::YAML) => serde_yaml::to_string(data)
+                .map_err(|err| KonfigError::MarshalError(err.to_string()))
+                .map(|s| s.into_bytes()),
+
+            FormatHandler::Builtin(BuiltinFormat::TOML) => toml::to_string(data)
+                .map_err(|err| KonfigError::MarshalError(err.to_string()))
+                .map(|s| s.into_bytes()),
+
+            FormatHandler::Custom(custom) => custom.marshal(data),
         }
     }
 
     pub fn unmarshal<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, KonfigError> {
         match self {
-            FormatHandlerEnum::JSON(handler) => handler.unmarshal(data),
-            FormatHandlerEnum::YAML(handler) => handler.unmarshal(data),
-            FormatHandlerEnum::TOML(handler) => handler.unmarshal(data),
+            FormatHandler::Builtin(BuiltinFormat::JSON) => serde_json::from_slice(data)
+                .map_err(|err| KonfigError::UnmarshalError(err.to_string())),
+
+            FormatHandler::Builtin(BuiltinFormat::YAML) => serde_yaml::from_slice(data)
+                .map_err(|err| KonfigError::UnmarshalError(err.to_string())),
+
+            FormatHandler::Builtin(BuiltinFormat::TOML) => toml::from_str(
+                str::from_utf8(data)
+                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))?,
+            )
+            .map_err(|err| KonfigError::UnmarshalError(err.to_string())),
+
+            FormatHandler::Custom(custom) => custom.marshal(data).and_then(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .map_err(|err| KonfigError::UnmarshalError(err.to_string()))
+            }),
         }
-    }
-}
-
-pub trait FormatHandler {
-    fn marshal<T: Serialize>(&self, data: &T) -> Result<Vec<u8>, KonfigError>;
-    fn unmarshal<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, KonfigError>;
-}
-
-pub struct JSONFormat {}
-impl FormatHandler for JSONFormat {
-    fn marshal<T: Serialize>(&self, data: &T) -> Result<Vec<u8>, KonfigError> {
-        serde_json::to_vec(data).map_err(|err| KonfigError::MarshalError(err.to_string()))
-    }
-
-    fn unmarshal<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, KonfigError> {
-        serde_json::from_slice(data).map_err(|err| KonfigError::UnmarshalError(err.to_string()))
-    }
-}
-
-pub struct YAMLFormat {}
-impl FormatHandler for YAMLFormat {
-    fn marshal<T: Serialize>(&self, data: &T) -> Result<Vec<u8>, KonfigError> {
-        serde_yaml::to_string(data)
-            .map_err(|err| KonfigError::MarshalError(err.to_string()))
-            .map(|s| s.into_bytes())
-    }
-
-    fn unmarshal<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, KonfigError> {
-        serde_yaml::from_slice(data).map_err(|err| KonfigError::UnmarshalError(err.to_string()))
-    }
-}
-
-pub struct TOMLFormat {}
-impl FormatHandler for TOMLFormat {
-    fn marshal<T: Serialize>(&self, data: &T) -> Result<Vec<u8>, KonfigError> {
-        toml::to_string(data)
-            .map_err(|err| KonfigError::MarshalError(err.to_string()))
-            .map(|s| s.into_bytes())
-    }
-
-    fn unmarshal<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, KonfigError> {
-        str::from_utf8(data)
-            .map_err(|err| KonfigError::UnmarshalError(err.to_string()))
-            .and_then(|s| {
-                toml::from_str(s).map_err(|err| KonfigError::UnmarshalError(err.to_string()))
-            })
     }
 }

@@ -52,7 +52,7 @@ fn main() {
     let mut c = Config { name: "Bob".to_string(), age: 32 };
 
     let mut manager = KonfigManager::new(KonfigOptions {
-        format: Format::JSON,
+        format: Format::JSON.create_handler(), // since version v0.1.2 you can implement and provide your own formats
         auto_save: false,
         use_callbacks: true,
         config_path: "config.json".to_string(),
